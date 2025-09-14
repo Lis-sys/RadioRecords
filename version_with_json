@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import sounddevice as sd
+import numpy as np
+import noisereduce as nr
+from vosk import Model, KaldiRecognizer
+import sys
+import json
+import datetime
+import os
+import wave
+import uuid  # Для генерации уникальных ID
+
+# --- Конфигурация --- #
+SAMPLERATE = 16000  # Гц
+CHANNELS = 1
+BLOCKSIZE = 8000  # 0.5 секунды аудио
+
+MODEL_PATH = "vosk-model-ru-0.42"
+LOG_FILE = "transcriptions_stream.log"
+HISTORY_JSON = "voice-chat.json"  # Файл для сохранения истории в формате JSON
+
+EXPECTED_PHRASES = [
+    "приём", "как слышно", "конец связи", "северо-восток", "юго-запад",
+    "атакую", "поддержка", "узел связи", "пеликан", "фокус-покус", "кубань",
+    "[unk]"
+]
+
+
+# --- Функции --- #
+
+def save_wav(filename, data, samplerate, channels):
+    """Сохраняет данные audio data в файл WAV."""
+    with wave.open(filename, 'wb') as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(2)  # 16 бит = 2 байта
+        wf.setframerate(samplerate)
+        wf.writeframes(data)
+
+
+def log_and_print(text, log_file_path):
+    """Функция для записи в лог и вывода в консоль."""
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_entry = f"[{timestamp}] - {text}"
+    print(f"\033[92m{log_entry}\033[K\033[0m")
+    try:
+        with open(log_file_path, "a", encoding="utf-8") as f:
+            f.write(log_entry + "\n")
+    except IOError as e:
+        print(f"Ошибка записи в файл {log_file_path}: {e}", file=sys.stderr)
+
+
+def load_json_history(json_file_path):
+    """Загружает историю сообщений из JSON файла."""
+    if os.path.exists(json_file_path):
+        try:
+            with open(json_file_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Ошибка загрузки истории: {e}. Будет создан новый файл.")
+            return []
+    else:
+        return []
+
+
+def save_to_json_history(new_entry, json_file_path):
+    """Добавляет новую запись в JSON файл истории."""
+    history = load_json_history(json_file_path)
+    history.append(new_entry)
+
+    try:
+        with open(json_file_path, 'w', encoding='utf-8') as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Ошибка сохранения в JSON: {e}", file=sys.stderr)
+
+
+# --- Основная программа --- #
+
+def main():
+    print("Инициализация...")
+
+    if not os.path.exists(MODEL_PATH):
+        print(f"Ошибка: Модель Vosk не найдена по пути {MODEL_PATH}")
+        print("Пожалуйста, скачайте модель с https://alphacephei.com/vosk/models")
+        sys.exit(1)
+
+    model = Model(MODEL_PATH)
+    rec = KaldiRecognizer(model, SAMPLERATE, json.dumps(EXPECTED_PHRASES, ensure_ascii=False))
+    print("Модель Vosk загружена.")
+
+    try:
+        device_info = sd.query_devices(kind='input')
+        input_device_index = sd.default.device[0]
+        for i, device in enumerate(sd.query_devices()):
+            if 'virtual' in device['name'].lower() or 'cable' in device['name'].lower():
+                input_device_index = i
+                break
+        print(f"Используется устройство ввода: {sd.query_devices(input_device_index)['name']}")
+    except Exception as e:
+        print(f"Ошибка при поиске аудиоустройств: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    log_path = os.path.abspath(LOG_FILE)
+    json_path = os.path.abspath(HISTORY_JSON)
+    print(f"Логи будут записываться в файл: {log_path}")
+    print(f"История будет сохраняться в файл: {json_path}")
+
+    wav_dir = "wav_records"
+    os.makedirs(wav_dir, exist_ok=True)
+
+    # Загружаем существующую историю
+    history = load_json_history(json_path)
+    print(f"Загружено {len(history)} записей из истории")
+
+    print("\nЗапуск аудиопотока в потоковом режиме...")
+    print("Слушаю эфир... Нажмите Ctrl+C для остановки.")
+
+    # Буфер для записи блоков аудио с речью
+    speech_audio_buffer = []
+
+    try:
+        with sd.InputStream(samplerate=SAMPLERATE, channels=CHANNELS, blocksize=BLOCKSIZE, device=input_device_index,
+                            dtype='int16') as stream:
+            while True:
+                data, overflowed = stream.read(BLOCKSIZE)
+                if overflowed:
+                    print("Переполнение аудио буфера!", file=sys.stderr)
+
+                # Преобразуем для подачи в vosk
+                audio_float = data.flatten().astype(np.float32) / 32768.0
+                reduced_noise_audio = nr.reduce_noise(y=audio_float, sr=SAMPLERATE, stationary=True, prop_decrease=0.8)
+                audio_bytes = (reduced_noise_audio * 32768.0).astype(np.int16).tobytes()
+
+                if rec.AcceptWaveform(audio_bytes):
+                    # Фраза завершена - достаем текст
+                    result = json.loads(rec.Result())
+                    text = result.get('text', '')
+                    if text:
+                        log_and_print(text, log_path)
+
+                        # Сохраняем накопленные блоки речи в один WAV файл
+                        if speech_audio_buffer:
+                            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                            wav_filename = f"voice_{timestamp}.wav"
+                            wav_fullpath = os.path.join(wav_dir, wav_filename)
+
+                            # объединяем буфер (список numpy массивов int16)
+                            full_audio = np.concatenate(speech_audio_buffer).tobytes()
+                            save_wav(wav_fullpath, full_audio, SAMPLERATE, CHANNELS)
+
+                            # Создаем запись для JSON истории
+                            now_iso = datetime.datetime.now().isoformat() + 'Z'
+                            new_entry = {
+                                "id": str(uuid.uuid4()),
+                                "file": wav_filename,
+                                "date": now_iso,
+                                "channel": 1,  # Можно настроить в конфигурации
+                                "text": text,
+                                "createdAt": now_iso,
+                                "updatedAt": now_iso
+                            }
+
+                            # Сохраняем в JSON
+                            save_to_json_history(new_entry, json_path)
+
+                            speech_audio_buffer = []  # очищаем буфер после записи
+
+                else:
+                    # Идет речь, собираем блоки в буфер
+                    partial_result = json.loads(rec.PartialResult())
+                    partial_text = partial_result.get('partial', '')
+                    if partial_text:
+                        print(f"Распознается: {partial_text}", end='\r')
+                        # Сохраняем оригинальный необработанный блок данных в буфер для записи при окончании фразы
+                        speech_audio_buffer.append(data.copy().flatten())
+
+    except KeyboardInterrupt:
+        print("\nОстановка программы...")
+        final_result = json.loads(rec.FinalResult())
+        final_text = final_result.get('text', '')
+        if final_text:
+            print("Последняя распознанная фраза:")
+            log_and_print(final_text, log_path)
+
+        # При выходе сохраняем текущий буфер, если есть
+        if speech_audio_buffer:
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            wav_filename = f"voice_{timestamp}.wav"
+            wav_fullpath = os.path.join(wav_dir, wav_filename)
+            full_audio = np.concatenate(speech_audio_buffer).tobytes()
+            save_wav(wav_fullpath, full_audio, SAMPLERATE, CHANNELS)
+
+            # Создаем запись для JSON истории
+            now_iso = datetime.datetime.now().isoformat() + 'Z'
+            new_entry = {
+                "id": str(uuid.uuid4()),
+                "file": wav_filename,
+                "date": now_iso,
+                "channel": 1,
+                "text": final_text if final_text else "[не распознано]",
+                "createdAt": now_iso,
+                "updatedAt": now_iso
+            }
+
+            # Сохраняем в JSON
+            save_to_json_history(new_entry, json_path)
+
+    except Exception as e:
+        print(f"\nПроизошла критическая ошибка: {e}", file=sys.stderr)
+    finally:
+        print("Программа завершена.")
+
+
+if __name__ == "__main__":
+    main()
