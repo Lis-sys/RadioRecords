@@ -11,12 +11,13 @@ import os
 import wave
 import requests
 import re
+import socket  # Добавлен импорт для получения имени компьютера
 from scipy.signal import butter, sosfiltfilt  # Для bandpass фильтра
 
 # --- Конфигурация --- #
 SAMPLERATE = 16000  # Гц
 CHANNELS = 1
-BLOCKSIZE = 6000  # 0.375 секунды аудио
+BLOCKSIZE = 8000  # 0.5 секунды аудио
 MODEL_PATH = "vosk-model-ru-0.42"
 LOG_FILE = "transcriptions_stream.log"
 wav_dir = "wav_records"
@@ -32,6 +33,9 @@ EXPECTED_PHRASES = [
     "четыре", "пять", "шесть", "семь", "восемь", "девять", "ноль", "альфа", "браво", "чарли"
     # Расширенный словарь: числа, команды
 ]
+
+# Получаем имя компьютера
+COMPUTER_NAME = socket.gethostname()
 
 # Параметры препроцессинга
 LOWCUT = 300.0  # Нижняя частота для bandpass (голосовой диапазон)
@@ -116,7 +120,7 @@ def add_punctuation(text):
     return text
 
 
-def send_to_server(filename, date, channel, text):
+def send_to_server(filename, date, channel, text, computer_name):
     """Отправляет распознанные данные на сервер."""
     headers = {
         'accept': '*/*',
@@ -130,7 +134,8 @@ def send_to_server(filename, date, channel, text):
         "file": filename,
         "date": date,
         "channel": channel,
-        "text": punctuated_text
+        "text": punctuated_text,
+        "computer_name": computer_name  # Добавлено имя компьютера
     }
 
     try:
@@ -173,6 +178,8 @@ def main():
     print(f"Логи будут записываться в файл: {log_path}")
     os.makedirs(wav_dir, exist_ok=True)
 
+    print(f"Имя компьютера: {COMPUTER_NAME}")
+
     print("\nЗапуск аудиопотока в потоковом режиме...")
     print("Слушаю эфир... Нажмите Ctrl+C для остановки.")
 
@@ -212,7 +219,7 @@ def main():
                             save_wav(wav_filename, full_audio, SAMPLERATE, CHANNELS)
 
                             iso_date = datetime.datetime.utcnow().isoformat(timespec='milliseconds') + 'Z'
-                            send_to_server(os.path.basename(wav_filename), iso_date, 4, text)
+                            send_to_server(os.path.basename(wav_filename), iso_date, 4, text, COMPUTER_NAME)
 
                         speech_audio_buffer = []
                     silence_blocks = 0
@@ -243,7 +250,7 @@ def main():
                                     save_wav(wav_filename, full_audio, SAMPLERATE, CHANNELS)
 
                                     iso_date = datetime.datetime.utcnow().isoformat(timespec='milliseconds') + 'Z'
-                                    send_to_server(os.path.basename(wav_filename), iso_date, 4, text)
+                                    send_to_server(os.path.basename(wav_filename), iso_date, 4, text, COMPUTER_NAME)
 
                                 speech_audio_buffer = []
                                 silence_blocks = 0
@@ -263,7 +270,7 @@ def main():
             save_wav(wav_filename, full_audio, SAMPLERATE, CHANNELS)
 
             iso_date = datetime.datetime.utcnow().isoformat(timespec='milliseconds') + 'Z'
-            send_to_server(os.path.basename(wav_filename), iso_date, 4, final_text)
+            send_to_server(os.path.basename(wav_filename), iso_date, 4, final_text, COMPUTER_NAME)
 
     except Exception as e:
         print(f"\nПроизошла критическая ошибка: {e}", file=sys.stderr)
