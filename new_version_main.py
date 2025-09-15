@@ -42,6 +42,9 @@ MIN_PEAK = 0.01  # Минимальный пик для применения н�
 ENERGY_THRESHOLD = 0.03  # Порог RMS для детекции тишины (тюнинговать для дальних сигналов)
 SILENCE_THRESHOLD = 4  # Кол-во блоков тишины для принудительного завершения фразы (~1.5с)
 
+# Московское время (UTC+3)
+MOSCOW_TZ = datetime.timezone(datetime.timedelta(hours=3))
+
 
 # --- Функции --- #
 def butter_bandpass(lowcut, highcut, fs, order=5):
@@ -116,6 +119,13 @@ def add_punctuation(text):
     return text
 
 
+def get_moscow_time():
+    """Возвращает текущее время в московском формате (UTC+3) в ISO формате без Z."""
+    moscow_time = datetime.datetime.now(MOSCOW_TZ)
+    # Форматируем время без информации о временной зоне
+    return moscow_time.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]  # Убираем микросекунды до миллисекунд
+
+
 def send_to_server(filename, date, channel, text):
     """Отправляет распознанные данные на сервер."""
     headers = {
@@ -132,6 +142,9 @@ def send_to_server(filename, date, channel, text):
         "channel": channel,
         "text": punctuated_text
     }
+
+    # Логируем отправляемые данные для отладки
+    log_and_print(f"Отправка на сервер: {payload}", LOG_FILE)
 
     try:
         response = requests.post(SERVER_URL, headers=headers, json=payload)
@@ -211,8 +224,8 @@ def main():
                             full_audio = np.concatenate(speech_audio_buffer).tobytes()
                             save_wav(wav_filename, full_audio, SAMPLERATE, CHANNELS)
 
-                            iso_date = datetime.datetime.utcnow().isoformat(timespec='milliseconds') + 'Z'
-                            send_to_server(os.path.basename(wav_filename), iso_date, 4, text)
+                            moscow_date = get_moscow_time()  # Используем московское время
+                            send_to_server(os.path.basename(wav_filename), moscow_date, 4, text)
 
                         speech_audio_buffer = []
                     silence_blocks = 0
@@ -242,8 +255,8 @@ def main():
                                     full_audio = np.concatenate(speech_audio_buffer).tobytes()
                                     save_wav(wav_filename, full_audio, SAMPLERATE, CHANNELS)
 
-                                    iso_date = datetime.datetime.utcnow().isoformat(timespec='milliseconds') + 'Z'
-                                    send_to_server(os.path.basename(wav_filename), iso_date, 4, text)
+                                    moscow_date = get_moscow_time()  # Используем московское время
+                                    send_to_server(os.path.basename(wav_filename), moscow_date, 4, text)
 
                                 speech_audio_buffer = []
                                 silence_blocks = 0
@@ -262,8 +275,8 @@ def main():
             full_audio = np.concatenate(speech_audio_buffer).tobytes()
             save_wav(wav_filename, full_audio, SAMPLERATE, CHANNELS)
 
-            iso_date = datetime.datetime.utcnow().isoformat(timespec='milliseconds') + 'Z'
-            send_to_server(os.path.basename(wav_filename), iso_date, 4, final_text)
+            moscow_date = get_moscow_time()  # Используем московское время
+            send_to_server(os.path.basename(wav_filename), moscow_date, 4, final_text)
 
     except Exception as e:
         print(f"\nПроизошла критическая ошибка: {e}", file=sys.stderr)
