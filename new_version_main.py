@@ -121,7 +121,7 @@ def add_punctuation(text):
 
 def get_moscow_time():
     """Возвращает текущее время в московском формате (UTC+3) в ISO формате без Z."""
-    moscow_time = datetime.datetime.now(MOSCOW_TZ)
+    moscow_time = datetime.datetime.now()
     # Форматируем время без информации о временной зоне
     return moscow_time.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]  # Убираем микросекунды до миллисекунд
 
